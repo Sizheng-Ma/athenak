@@ -321,6 +321,7 @@ void NewtonianStarGravity(Mesh *pm, const Real bdt) {
     const int J_c = std::max(0, std::min(Ny-1, static_cast<int>((0.0 - star.x2min)  / h)));
     const int K_c = std::max(0, std::min(Nz-1, static_cast<int>((0.0 - star.x3min)  / h)));
     Real rho_center_local = 0.0;
+    bool found = false;
     for (int m = 0; m < nmb; m++) {
       const int I0 = static_cast<int>(std::round((mbsize.h_view(m).x1min - x1min)      / h));
       const int J0 = static_cast<int>(std::round((mbsize.h_view(m).x2min - star.x2min) / h));
@@ -329,8 +330,26 @@ void NewtonianStarGravity(Mesh *pm, const Real bdt) {
           J_c >= J0 && J_c < J0 + indcs.nx2 &&
           K_c >= K0 && K_c < K0 + indcs.nx3) {
         rho_center_local = w0_mirror(m, IDN, ks+(K_c-K0), js+(J_c-J0), is+(I_c-I0));
+        found = true;
         break;
       }
+    }
+    // Debug: print once on the first gravity call
+    static bool debug_printed = false;
+    if (!debug_printed) {
+#if MPI_PARALLEL_ENABLED
+      int myrank; MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+      if (found) {
+        std::fprintf(stderr, "[DEBUG rho_center] rank=%d found center cell (%d,%d,%d) "
+                     "rho_center_local=%.6f nmb=%d\n",
+                     myrank, I_c, J_c, K_c, rho_center_local, nmb);
+      }
+#else
+      std::fprintf(stderr, "[DEBUG rho_center] no-MPI found=%d cell=(%d,%d,%d) "
+                   "rho_center_local=%.6f nmb=%d\n",
+                   (int)found, I_c, J_c, K_c, rho_center_local, nmb);
+#endif
+      debug_printed = true;
     }
 #if MPI_PARALLEL_ENABLED
     MPI_Allreduce(&rho_center_local, &star.rho_center, 1,
