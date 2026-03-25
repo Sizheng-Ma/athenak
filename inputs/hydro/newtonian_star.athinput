@@ -1,0 +1,106 @@
+# AthenaXXX input file: Newtonian polytropic star (Lane-Emden equilibrium)
+#
+# Compile:
+#   cd build && cmake -D PROBLEM=newtonian_star .. && make -j$(nproc)
+#
+# Run:
+#   ./src/athena -i ../inputs/hydro/newtonian_star.athinput
+#
+# Physics:
+#   Gamma = 5/3  =>  polytropic index n = 1/(Gamma-1) = 3/2  (Lane-Emden n=3/2)
+#   xi_surface ~ 3.6538,  R_star = alpha * xi_surface
+#   With G=K=rho_c=1:  alpha = sqrt(5*K*rho_c^(Gamma-2)/(12*pi*G))
+#                             = sqrt(5/(12*pi)) ~ 0.3643
+#   R_star ~ 0.3643 * 3.6538 ~ 1.331
+#   M_star ~ 4*pi*alpha^3*rho_c * |phi_surface|  (phi_surface ~ -2.714)
+#          ~ 4*pi*(0.3643)^3*1.0*2.714 ~ 0.564
+#
+# The star is centred on the origin.  The box is [-2, 2]^3, larger than the
+# star radius, filled with a low-density atmosphere outside R_star.
+#
+# A small radial velocity perturbation (v_pert) can excite the fundamental
+# radial oscillation mode.
+
+<comment>
+problem   = Newtonian polytropic star (Lane-Emden, frozen gravity)
+reference = Lane (1870), Emden (1907)
+
+<job>
+basename  = newt_star
+
+<mesh>
+nghost    = 2
+
+nx1       = 64
+x1min     = -2.0
+x1max     =  2.0
+ix1_bc    = outflow
+ox1_bc    = outflow
+
+nx2       = 64
+x2min     = -2.0
+x2max     =  2.0
+ix2_bc    = outflow
+ox2_bc    = outflow
+
+nx3       = 64
+x3min     = -2.0
+x3max     =  2.0
+ix3_bc    = outflow
+ox3_bc    = outflow
+
+<meshblock>
+nx1       = 32
+nx2       = 32
+nx3       = 32
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = -1
+tlim       = 10.0
+ndiag      = 100
+
+<hydro>
+eos         = ideal
+reconstruct = plm
+rsolver     = hllc
+gamma       = 1.6667       # 5/3 for non-relativistic ideal gas
+
+<problem>
+# Self-gravity toggle (must also set user_srcs = true for gravity to be applied)
+user_srcs = true
+
+# Physical parameters (code units with G = K = rho_c = 1)
+G_newt    = 1.0            # Newton's gravitational constant
+rho_c     = 1.0            # central density
+K_poly    = 1.0            # polytropic constant  P = K_poly * rho^gamma
+
+# Atmosphere: low-density floor outside the star
+rho_atmo  = 1.0e-6         # atmosphere density
+
+# Optional radial velocity perturbation to excite oscillations (set 0 for equilibrium)
+v_pert    = 0.0
+
+# Multigrid Poisson solver
+n_vcycles = 4              # V-cycles per RK sub-step (4 is usually sufficient)
+
+# Lagrangian particle initial conditions (position and velocity, code units)
+# Default: particle at 0.5*R_star on the x-axis, at rest
+px0       = 0.665          # ~ 0.5 * R_star (R_star ~ 1.331)
+py0       = 0.0
+pz0       = 0.0
+pvx0      = 0.0
+pvy0      = 0.0
+pvz0      = 0.0
+
+<output1>
+file_type  = hdf5
+variable   = hydro_w        # primitive variables: rho, vx, vy, vz, P
+dt         = 0.5
+id         = prim
+
+<output2>
+file_type  = hst
+dt         = 0.05
