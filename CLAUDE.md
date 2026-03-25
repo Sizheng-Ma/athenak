@@ -147,6 +147,7 @@ struct StarData {
   int Nx, Ny, Nz;         // global active cell counts
   Real x1min, x2min, x3min, h;  // domain origin and cell spacing
   std::vector<Real> rho_global; // host density buffer (Nx*Ny*Nz)
+  Real rho_center = 0.0;        // central density (updated each gravity step)
   DvceArray1D<Real> d_phi;      // device potential array
   int n_le;
   DvceArray1D<Real> d_r_le, d_rho_le, d_prs_le;  // Lane-Emden IC tables
@@ -178,6 +179,18 @@ Grid: 64³ cells, box [-2,2]³, 32³ cells per MeshBlock, outflow BCs on all fac
 4. **Dirichlet without ghost cells**: denominator is `6 + N_bnd` not `6`; boundary neighbors contribute 0 to neighbor sum.
 5. **Kokkos global destructor crash**: device arrays (`DvceArray1D`) in a global `StarData` struct are destroyed after `Kokkos::finalize()`. Fix: call `Kokkos::push_finalize_hook([]() { star.d_phi = DvceArray1D<Real>(); ... })` at the end of `UserProblem` to reset them before Kokkos shuts down.
 6. **Cluster MPI**: OpenMPI at `/usr/mpi/gcc/openmpi-4.1.7rc1` is not built with SLURM PMI — causes abort at `MPI_Init`. Use Intel MPI (`/cm/shared/opt/intel/oneapi/mpi/2021.15/bin/mpicxx`) instead. Use `srun` (not `mpirun`) as the job launcher.
+7. **rho_center reads ~8x too high** (`~7.95` instead of `~1.0`): `NewtonianStarHistory` outputs `star.rho_center` set from `rho_global` after `MPI_Allreduce`. The value `7.95 / 8 ≈ 0.994 ≈ rho_c` suggests the Allreduce is summing 8 identical copies — i.e. each MPI rank already has the full `rho_global` populated before the reduce. Root cause not yet confirmed; needs investigation next session. Also, `rho_center = 0` at `t=0` because the gravity source term hasn't been called yet when the first history write happens.
+
+---
+
+## Self-Gravity Verification Plan
+
+The goal is to verify self-gravity is correct by exciting the fundamental radial oscillation mode and comparing its period to the analytical value.
+
+- **Method**: set `v_pert = 0.05` in `<problem>` block, run with `tlim = 30`
+- **Diagnostic**: `newt_star.user.hst` column `rho_c` should oscillate sinusoidally around `~1.0`
+- **Analytical period**: `T = 2π / (σ · ω_dyn)` where `ω_dyn = sqrt(GM/R³) ≈ 0.489` (code units) and `σ` is the dimensionless eigenvalue for n=3/2, γ=5/3 polytrope (from Cox 1980 or numerical solution of linearised oscillation equations)
+- **Blocker**: `rho_center` is currently reading `~7.95` instead of `~1.0` (see known issue #7 above) — must fix before the period comparison is meaningful
 
 ---
 
@@ -189,6 +202,7 @@ Grid: 64³ cells, box [-2,2]³, 32³ cells per MeshBlock, outflow BCs on all fac
 - [x] `src/CMakeLists.txt` updated to include `gravity/mg_gravity.cpp`
 - [x] Lagrangian particle removed (user does not need it)
 - [x] Kokkos finalize-hook fix for clean shutdown
-- [x] Successfully ran to `tlim=10` on cluster (mass conserved, energy nearly conserved)
-
-The code is ready to compile and run. No pending tasks.
+- [x] Central density history output (`NewtonianStarHistory` → `newt_star.user.hst`)
+- [x] Successfully ran to `tlim=10` on cluster (mass conserved, ~5% energy loss over 35 time units)
+- [ ] **Fix rho_center bug** (reads ~8x too high on cluster with 8 MPI ranks)
+- [ ] Run oscillation test (`v_pert=0.05`, `tlim=30`) and compare period to analytical value
