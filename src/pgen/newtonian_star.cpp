@@ -423,5 +423,11 @@ void NewtonianStarGravity(Mesh *pm, const Real bdt) {
 void NewtonianStarHistory(HistoryData *pdata, Mesh *pm) {
   pdata->nhist = 1;
   pdata->label[0] = "rho_c";
+  // AthenaK sums user history across all MPI ranks, so only rank 0 contributes.
+#if MPI_PARALLEL_ENABLED
+  int myrank; MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+  pdata->hdata[0] = (myrank == 0) ? star.rho_center : 0.0;
+#else
   pdata->hdata[0] = star.rho_center;
+#endif
 }
