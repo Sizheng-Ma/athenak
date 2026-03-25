@@ -314,12 +314,30 @@ void NewtonianStarGravity(Mesh *pm, const Real bdt) {
                 MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
 #endif
 
-  // Record central density (cell nearest the origin)
+  // Record central density: search local MeshBlocks for the cell nearest the origin,
+  // then broadcast with MPI_MAX so all ranks get the correct value from the owning rank.
   {
-    int I_c = std::max(0, std::min(Nx-1, static_cast<int>((0.0 - x1min) / h)));
-    int J_c = std::max(0, std::min(Ny-1, static_cast<int>((0.0 - star.x2min) / h)));
-    int K_c = std::max(0, std::min(Nz-1, static_cast<int>((0.0 - star.x3min) / h)));
-    star.rho_center = star.rho_global[K_c*Ny*Nx + J_c*Nx + I_c];
+    const int I_c = std::max(0, std::min(Nx-1, static_cast<int>((0.0 - x1min)       / h)));
+    const int J_c = std::max(0, std::min(Ny-1, static_cast<int>((0.0 - star.x2min)  / h)));
+    const int K_c = std::max(0, std::min(Nz-1, static_cast<int>((0.0 - star.x3min)  / h)));
+    Real rho_center_local = 0.0;
+    for (int m = 0; m < nmb; m++) {
+      const int I0 = static_cast<int>(std::round((mbsize.h_view(m).x1min - x1min)      / h));
+      const int J0 = static_cast<int>(std::round((mbsize.h_view(m).x2min - star.x2min) / h));
+      const int K0 = static_cast<int>(std::round((mbsize.h_view(m).x3min - star.x3min) / h));
+      if (I_c >= I0 && I_c < I0 + indcs.nx1 &&
+          J_c >= J0 && J_c < J0 + indcs.nx2 &&
+          K_c >= K0 && K_c < K0 + indcs.nx3) {
+        rho_center_local = w0_mirror(m, IDN, ks+(K_c-K0), js+(J_c-J0), is+(I_c-I0));
+        break;
+      }
+    }
+#if MPI_PARALLEL_ENABLED
+    MPI_Allreduce(&rho_center_local, &star.rho_center, 1,
+                  MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
+#else
+    star.rho_center = rho_center_local;
+#endif
   }
 
   // ==========================================================================
