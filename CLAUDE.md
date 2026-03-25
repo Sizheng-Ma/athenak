@@ -179,7 +179,7 @@ Grid: 64³ cells, box [-2,2]³, 32³ cells per MeshBlock, outflow BCs on all fac
 4. **Dirichlet without ghost cells**: denominator is `6 + N_bnd` not `6`; boundary neighbors contribute 0 to neighbor sum.
 5. **Kokkos global destructor crash**: device arrays (`DvceArray1D`) in a global `StarData` struct are destroyed after `Kokkos::finalize()`. Fix: call `Kokkos::push_finalize_hook([]() { star.d_phi = DvceArray1D<Real>(); ... })` at the end of `UserProblem` to reset them before Kokkos shuts down.
 6. **Cluster MPI**: OpenMPI at `/usr/mpi/gcc/openmpi-4.1.7rc1` is not built with SLURM PMI — causes abort at `MPI_Init`. Use Intel MPI (`/cm/shared/opt/intel/oneapi/mpi/2021.15/bin/mpicxx`) instead. Use `srun` (not `mpirun`) as the job launcher.
-7. **rho_center reads ~8x too high** (`~7.95` instead of `~1.0`): `NewtonianStarHistory` outputs `star.rho_center` set from `rho_global` after `MPI_Allreduce`. The value `7.95 / 8 ≈ 0.994 ≈ rho_c` suggests the Allreduce is summing 8 identical copies — i.e. each MPI rank already has the full `rho_global` populated before the reduce. Root cause not yet confirmed; needs investigation next session. Also, `rho_center = 0` at `t=0` because the gravity source term hasn't been called yet when the first history write happens.
+7. **rho_center reads ~8x too high** (`~7.95` instead of `~1.0`): persists despite two attempted fixes. Fix attempt 1: read from `rho_global` after `MPI_Allreduce(SUM)` — gave 8x. Fix attempt 2: search `w0_mirror` per-block with `MPI_Allreduce(MPI_MAX)` — still gives 7.95. A debug print was added (prints to `err` file on the first gravity call) to determine: whether the center block is found, what cell indices are used, what raw value is read, and whether the new binary is actually running. **Next session: check the `err` output from the cluster to diagnose.** Also, `rho_center = 0` at `t=0` because the gravity source term hasn't been called yet when the first history write happens.
 
 ---
 
@@ -204,5 +204,6 @@ The goal is to verify self-gravity is correct by exciting the fundamental radial
 - [x] Kokkos finalize-hook fix for clean shutdown
 - [x] Central density history output (`NewtonianStarHistory` → `newt_star.user.hst`)
 - [x] Successfully ran to `tlim=10` on cluster (mass conserved, ~5% energy loss over 35 time units)
-- [ ] **Fix rho_center bug** (reads ~8x too high on cluster with 8 MPI ranks)
-- [ ] Run oscillation test (`v_pert=0.05`, `tlim=30`) and compare period to analytical value
+- [ ] **Fix rho_center bug** — debug print added; check `err` file on cluster for `[DEBUG rho_center]` line
+- [ ] Once rho_center is fixed: run oscillation test (`v_pert=0.05`, `tlim=30`) and compare period to analytical value
+- [ ] Investigate star drift/symmetry breaking after t~60 (KE components become asymmetric, star develops net z-momentum ~0.43 at t=90, 28% mass loss by t=102) — likely from MeshBlock boundary asymmetry; test with single MeshBlock (meshblock=64³)
