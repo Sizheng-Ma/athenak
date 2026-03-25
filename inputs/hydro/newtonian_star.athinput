@@ -88,7 +88,7 @@ n_vcycles = 4              # V-cycles per RK sub-step (4 is usually sufficient)
 
 
 <output1>
-file_type  = hdf5
+file_type  = vtk
 variable   = hydro_w        # primitive variables: rho, vx, vy, vz, P
 dt         = 0.5
 id         = prim
