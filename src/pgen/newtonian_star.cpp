@@ -65,6 +65,9 @@ struct StarData {
   // Host buffer for density source term (Nx*Ny*Nz)
   std::vector<Real> rho_global;
 
+  // Central density (updated each gravity step, written to history)
+  Real rho_center = 0.0;
+
   // Device array holding the potential (Nx*Ny*Nz, flat), for the apply kernel
   DvceArray1D<Real> d_phi;
 
@@ -81,6 +84,7 @@ StarData star;
 
 // Forward declarations (global scope, matching their definitions below)
 static void NewtonianStarGravity(Mesh *pm, const Real bdt);
+static void NewtonianStarHistory(HistoryData *pdata, Mesh *pm);
 
 // ---------------------------------------------------------------------------
 // Lane-Emden solver (RK4, host)
@@ -195,8 +199,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   Kokkos::deep_copy(star.d_rho_le, h_rho_le);
   Kokkos::deep_copy(star.d_prs_le, h_prs_le);
 
-  // ---- Enroll source term ----------------------------------------------------
+  // ---- Enroll source term and history ----------------------------------------
   user_srcs_func = NewtonianStarGravity;
+  user_hist      = true;
+  user_hist_func = NewtonianStarHistory;
 
   if (restart) return;
 
@@ -308,6 +314,14 @@ void NewtonianStarGravity(Mesh *pm, const Real bdt) {
                 MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
 #endif
 
+  // Record central density (cell nearest the origin)
+  {
+    int I_c = std::max(0, std::min(Nx-1, static_cast<int>((0.0 - x1min) / h)));
+    int J_c = std::max(0, std::min(Ny-1, static_cast<int>((0.0 - star.x2min) / h)));
+    int K_c = std::max(0, std::min(Nz-1, static_cast<int>((0.0 - star.x3min) / h)));
+    star.rho_center = star.rho_global[K_c*Ny*Nx + J_c*Nx + I_c];
+  }
+
   // ==========================================================================
   // Step 3: Build source term  S = 4*pi*G*rho  and solve Poisson equation
   // ==========================================================================
@@ -364,4 +378,13 @@ void NewtonianStarGravity(Mesh *pm, const Real bdt) {
     u0(m, IEN, k, j, i) += bdt * rho * (vx*ax + vy*ay + vz*az);
   });
 
+}
+
+// ---------------------------------------------------------------------------
+// NewtonianStarHistory — output central density to user history file
+// ---------------------------------------------------------------------------
+void NewtonianStarHistory(HistoryData *pdata, Mesh *pm) {
+  pdata->nhist = 1;
+  pdata->label[0] = "rho_c";
+  pdata->hdata[0] = star.rho_center;
 }
