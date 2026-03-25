@@ -10,7 +10,6 @@ ongoing project so any future session can pick up immediately.
 Simulate a **Newtonian polytropic star** in AthenaK with:
 1. Lane-Emden equilibrium initial conditions
 2. Full 3D self-gravity via a multigrid Poisson solver
-3. A Lagrangian tracer particle moving inside the star under self-gravity
 
 ---
 
@@ -20,7 +19,7 @@ Simulate a **Newtonian polytropic star** in AthenaK with:
 
 | File | Purpose |
 |---|---|
-| `src/pgen/newtonian_star.cpp` | Problem generator: ICs, gravity source term, particle |
+| `src/pgen/newtonian_star.cpp` | Problem generator: ICs and gravity source term |
 | `src/gravity/mg_gravity.hpp` | MGGravity class interface |
 | `src/gravity/mg_gravity.cpp` | V-cycle multigrid Poisson solver implementation |
 | `inputs/hydro/newtonian_star.athinput` | Runtime parameter file |
@@ -33,7 +32,53 @@ Simulate a **Newtonian polytropic star** in AthenaK with:
 
 ---
 
-## How to Build and Run
+## Cluster Build (Perimeter Institute)
+
+The cluster at `/mnt/beegfs/sma2/` uses Intel oneAPI MPI (OpenMPI at `/usr/mpi/gcc/openmpi-4.1.7rc1` is NOT built with SLURM PMI support — don't use it). Job launcher is `srun`.
+
+```bash
+source /cm/shared/opt/intel/oneapi/setvars.sh
+cd /mnt/beegfs/sma2/athenak
+rm -rf build && mkdir build && cd build
+cmake -D PROBLEM=newtonian_star \
+      -D Athena_ENABLE_MPI=ON \
+      -D Athena_ENABLE_OPENMP=ON \
+      -D CMAKE_CXX_COMPILER=/cm/shared/opt/intel/oneapi/mpi/2021.15/bin/mpicxx \
+      ..
+make -j$(nproc)
+cp src/athena /mnt/beegfs/sma2/GMC/athena
+```
+
+**Note:** AthenaK does NOT support HDF5 output. Use `file_type = vtk` (or `bin`) in the athinput.
+
+### SLURM job script (`run.sh`) — 1 node, 40 cores (8 MPI × 5 OpenMP)
+
+```bash
+#!/bin/bash
+#SBATCH -J GMC
+#SBATCH -o res
+#SBATCH -e err
+#SBATCH -N 1
+#SBATCH -n 8
+#SBATCH --cpus-per-task=5
+#SBATCH -t 24:00:00
+#SBATCH -p defq
+#SBATCH --mail-user=sma2@perimeterinstitute.ca
+#SBATCH --mail-type=END
+
+source /cm/shared/opt/intel/oneapi/setvars.sh
+export OMP_NUM_THREADS=5
+export OMP_PROC_BIND=close
+export OMP_PLACES=cores
+
+srun -n 8 ./athena -i newtonian_star.athinput -d output
+```
+
+Run directory: `/mnt/beegfs/sma2/GMC/`
+
+---
+
+## How to Build Locally
 
 ```bash
 cd /Users/sizhengma/athenak
@@ -71,13 +116,6 @@ Solves `∇²Φ = 4πGρ` with **Dirichlet BC** (Φ=0 on all 6 faces).
 4. `MGGravity::SetRHS(4*pi*G*rho_global)` + `MGGravity::Solve(n_vcycles)`
 5. Copy `phi_[0]` → device `d_phi` via `deep_copy`
 6. `par_for` kernel on device: central-difference `-∇Φ` → update `u0(IM1,IM2,IM3,IEN)`
-7. Host-side trilinear interpolation of `-∇Φ` at particle position → leapfrog kick+drift
-
-### Lagrangian particle (leapfrog)
-- State: `px, py, pz, pvx, pvy, pvz` in `StarData` (host)
-- Each sub-step: interpolate `GetAccel(I,J,K)` at particle position (trilinear, 8-cell stencil)
-- Kick: `pv += bdt * a`; Drift: `p += bdt * pv`
-- Trajectory output via `user_hist_func` → history file columns: `px py pz pvx pvy pvz`
 
 ---
 
@@ -92,8 +130,9 @@ Solves `∇²Φ = 4πGρ` with **Dirichlet BC** (Φ=0 on all 6 faces).
 - **`mesh_size`**: `dx1,dx2,dx3` = cell spacing; `x1min/x1max` = domain bounds
 - **Math in KOKKOS_LAMBDA**: use `#include <math.h>` and unqualified `sqrt`, `pow`, `sin` — NOT `std::` versions (GPU device code incompatibility)
 - **User source terms**: register `user_srcs_func = MyFunc` where `MyFunc` has signature `void(Mesh*, const Real bdt)`
-- **User history**: set `user_hist = true` and register `user_hist_func = MyFunc` with signature `void(HistoryData*, Mesh*)`
 - **MPI**: wrap with `#if MPI_PARALLEL_ENABLED` / `#endif`; use `MPI_ATHENA_REAL` for the datatype
+- **MeshBlocks**: total blocks = `(mesh.nx / meshblock.nx)` per dimension multiplied. Must divide evenly; meshblock ≥ 4 cells and divisible by 2 in each dim.
+- **Output formats**: supported are `vtk`, `pvtk`, `bin`, `cbin`, `tab`, `hst`, `rst`, `trk`, `log`. HDF5 is NOT supported.
 
 ---
 
@@ -111,8 +150,6 @@ struct StarData {
   DvceArray1D<Real> d_phi;      // device potential array
   int n_le;
   DvceArray1D<Real> d_r_le, d_rho_le, d_prs_le;  // Lane-Emden IC tables
-  Real px, py, pz, pvx, pvy, pvz;  // particle state
-  bool particle_active;
 };
 ```
 
@@ -128,8 +165,6 @@ struct StarData {
 | `rho_atmo` | 1e-6 | Atmosphere density floor |
 | `v_pert` | 0.0 | Radial velocity perturbation amplitude |
 | `n_vcycles` | 4 | Multigrid V-cycles per RK sub-step |
-| `px0,py0,pz0` | 0.5*R_star,0,0 | Particle initial position |
-| `pvx0,pvy0,pvz0` | 0,0,0 | Particle initial velocity |
 
 Grid: 64³ cells, box [-2,2]³, 32³ cells per MeshBlock, outflow BCs on all faces.
 
@@ -141,16 +176,19 @@ Grid: 64³ cells, box [-2,2]³, 32³ cells per MeshBlock, outflow BCs on all fac
 2. **`MDRangePolicy` is not used in AthenaK** — always use `par_for` with 4-index signature.
 3. **Global index offset**: map MeshBlock to global grid with `I0 = round((x1min_mb - x1min_global) / h)`.
 4. **Dirichlet without ghost cells**: denominator is `6 + N_bnd` not `6`; boundary neighbors contribute 0 to neighbor sum.
+5. **Kokkos global destructor crash**: device arrays (`DvceArray1D`) in a global `StarData` struct are destroyed after `Kokkos::finalize()`. Fix: call `Kokkos::push_finalize_hook([]() { star.d_phi = DvceArray1D<Real>(); ... })` at the end of `UserProblem` to reset them before Kokkos shuts down.
+6. **Cluster MPI**: OpenMPI at `/usr/mpi/gcc/openmpi-4.1.7rc1` is not built with SLURM PMI — causes abort at `MPI_Init`. Use Intel MPI (`/cm/shared/opt/intel/oneapi/mpi/2021.15/bin/mpicxx`) instead. Use `srun` (not `mpirun`) as the job launcher.
 
 ---
 
 ## Status (as of last session)
 
-All four tasks are **complete**:
 - [x] Lane-Emden initial conditions
 - [x] MGGravity multigrid Poisson solver (`src/gravity/`)
-- [x] Lagrangian particle with leapfrog + trilinear interpolation
-- [x] `inputs/hydro/newtonian_star.athinput` updated with particle and multigrid params
+- [x] `inputs/hydro/newtonian_star.athinput` with multigrid params and VTK output
 - [x] `src/CMakeLists.txt` updated to include `gravity/mg_gravity.cpp`
+- [x] Lagrangian particle removed (user does not need it)
+- [x] Kokkos finalize-hook fix for clean shutdown
+- [x] Successfully ran to `tlim=10` on cluster (mass conserved, energy nearly conserved)
 
 The code is ready to compile and run. No pending tasks.

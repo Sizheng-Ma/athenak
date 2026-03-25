@@ -22,7 +22,7 @@
 # radial oscillation mode.
 
 <comment>
-problem   = Newtonian polytropic star (Lane-Emden, frozen gravity)
+problem   = Newtonian polytropic star (Lane-Emden, multigrid self-gravity)
 reference = Lane (1870), Emden (1907)
 
 <job>
@@ -86,14 +86,6 @@ v_pert    = 0.0
 # Multigrid Poisson solver
 n_vcycles = 4              # V-cycles per RK sub-step (4 is usually sufficient)
 
-# Lagrangian particle initial conditions (position and velocity, code units)
-# Default: particle at 0.5*R_star on the x-axis, at rest
-px0       = 0.665          # ~ 0.5 * R_star (R_star ~ 1.331)
-py0       = 0.0
-pz0       = 0.0
-pvx0      = 0.0
-pvy0      = 0.0
-pvz0      = 0.0
 
 <output1>
 file_type  = hdf5

@@ -4,8 +4,7 @@
 // Licensed under the 3-clause BSD License (the "LICENSE")
 //========================================================================================
 //! \file newtonian_star.cpp
-//! \brief Problem generator: Newtonian polytropic star with multigrid self-gravity
-//!        and one Lagrangian tracer particle.
+//! \brief Problem generator: Newtonian polytropic star with multigrid self-gravity.
 //!
 //! Self-gravity algorithm (every RK sub-step):
 //!   1. Gather density rho from all MeshBlocks onto a single host grid.
@@ -13,12 +12,6 @@
 //!   3. Solve  nabla^2 Phi = 4*pi*G*rho  with Dirichlet BC (Phi=0 on faces)
 //!      using n_vcycles V-cycles of red-black Gauss-Seidel multigrid.
 //!   4. Compute -grad Phi at each cell centre; add to conserved momenta/energy.
-//!
-//! Particle:
-//!   - Position (px, py, pz) and velocity (pvx, pvy, pvz) stored in StarData.
-//!   - Leapfrog integration: at each sub-step, interpolate -grad Phi at the
-//!     particle position and kick the velocity; drift the position.
-//!   - Particle trajectory printed to a separate history file via user_hist_func.
 //!
 //! Compile: cmake -D PROBLEM=newtonian_star <source_dir>
 //!
@@ -29,8 +22,6 @@
 //!   rho_atmo   : atmosphere density floor           (default rho_c * 1e-6)
 //!   v_pert     : radial velocity perturbation       (default 0.0)
 //!   n_vcycles  : multigrid V-cycles per sub-step    (default 4)
-//!   px0,py0,pz0        : particle initial position  (default 0.5*R_star, 0, 0)
-//!   pvx0,pvy0,pvz0     : particle initial velocity  (default 0)
 //!
 //! Requires <hydro> block with eos = ideal.
 
@@ -81,11 +72,6 @@ struct StarData {
   int n_le;
   DvceArray1D<Real> d_r_le, d_rho_le, d_prs_le;
 
-  // Particle state (leapfrog; updated on host, applied to device indirectly)
-  Real px, py, pz;        // position
-  Real pvx, pvy, pvz;     // velocity (half-step leapfrog)
-  bool particle_active;
-
   ~StarData() { delete mg; }
 };
 
@@ -95,7 +81,6 @@ StarData star;
 
 // Forward declarations (global scope, matching their definitions below)
 static void NewtonianStarGravity(Mesh *pm, const Real bdt);
-static void NewtonianStarHistory(HistoryData *pdata, Mesh *pm);
 
 // ---------------------------------------------------------------------------
 // Lane-Emden solver (RK4, host)
@@ -210,19 +195,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   Kokkos::deep_copy(star.d_rho_le, h_rho_le);
   Kokkos::deep_copy(star.d_prs_le, h_prs_le);
 
-  // ---- Particle initial conditions -------------------------------------------
-  star.particle_active = true;
-  star.px  = pin->GetOrAddReal("problem", "px0",  0.5*star.R_star);
-  star.py  = pin->GetOrAddReal("problem", "py0",  0.0);
-  star.pz  = pin->GetOrAddReal("problem", "pz0",  0.0);
-  star.pvx = pin->GetOrAddReal("problem", "pvx0", 0.0);
-  star.pvy = pin->GetOrAddReal("problem", "pvy0", 0.0);
-  star.pvz = pin->GetOrAddReal("problem", "pvz0", 0.0);
-
-  // ---- Enroll source term and history ----------------------------------------
+  // ---- Enroll source term ----------------------------------------------------
   user_srcs_func = NewtonianStarGravity;
-  user_hist      = true;
-  user_hist_func = NewtonianStarHistory;
 
   if (restart) return;
 
@@ -390,69 +364,4 @@ void NewtonianStarGravity(Mesh *pm, const Real bdt) {
     u0(m, IEN, k, j, i) += bdt * rho * (vx*ax + vy*ay + vz*az);
   });
 
-  // ==========================================================================
-  // Step 6: Particle leapfrog kick + drift
-  // Only do this on one rank (all ranks have the same phi after allreduce)
-  // ==========================================================================
-  if (!star.particle_active) return;
-
-  // Interpolate -grad Phi at the particle position (trilinear, host-side)
-  // Continuous coordinate -> fractional global index
-  auto interp_accel = [&](Real px, Real py, Real pz,
-                          Real &ax, Real &ay, Real &az) {
-    // fractional global index (0-based)
-    Real fi = (px - x1min) / h - 0.5;
-    Real fj = (py - x2min) / h - 0.5;
-    Real fk = (pz - x3min) / h - 0.5;
-
-    int i0 = static_cast<int>(std::floor(fi));
-    int j0 = static_cast<int>(std::floor(fj));
-    int k0 = static_cast<int>(std::floor(fk));
-
-    Real tx = fi - i0, ty = fj - j0, tz = fk - k0;
-
-    ax = ay = az = 0.0;
-    for (int dk = 0; dk <= 1; dk++)
-    for (int dj = 0; dj <= 1; dj++)
-    for (int di = 0; di <= 1; di++) {
-      int I = i0+di, J = j0+dj, K = k0+dk;
-      // clamp to valid range
-      I = std::max(0, std::min(Nx-1, I));
-      J = std::max(0, std::min(Ny-1, J));
-      K = std::max(0, std::min(Nz-1, K));
-
-      Real wt = (di ? tx : 1.0-tx) * (dj ? ty : 1.0-ty) * (dk ? tz : 1.0-tz);
-      Real lax, lay, laz;
-      star.mg->GetAccel(I, J, K, lax, lay, laz);
-      ax += wt * lax;  ay += wt * lay;  az += wt * laz;
-    }
-  };
-
-  Real ax_p, ay_p, az_p;
-  interp_accel(star.px, star.py, star.pz, ax_p, ay_p, az_p);
-
-  // Velocity kick (full leapfrog: first half-kick is done at t=0 in IC setup,
-  // but here we do a full kick each sub-step, which is exact for uniform accel)
-  star.pvx += bdt * ax_p;
-  star.pvy += bdt * ay_p;
-  star.pvz += bdt * az_p;
-
-  // Position drift
-  star.px += bdt * star.pvx;
-  star.py += bdt * star.pvy;
-  star.pz += bdt * star.pvz;
-}
-
-// ---------------------------------------------------------------------------
-// NewtonianStarHistory — output particle trajectory to history file
-// ---------------------------------------------------------------------------
-void NewtonianStarHistory(HistoryData *pdata, Mesh *pm) {
-  // Append 6 custom columns: px, py, pz, pvx, pvy, pvz
-  pdata->nhist = 6;
-  pdata->label[0] = "px";   pdata->hdata[0] = star.px;
-  pdata->label[1] = "py";   pdata->hdata[1] = star.py;
-  pdata->label[2] = "pz";   pdata->hdata[2] = star.pz;
-  pdata->label[3] = "pvx";  pdata->hdata[3] = star.pvx;
-  pdata->label[4] = "pvy";  pdata->hdata[4] = star.pvy;
-  pdata->label[5] = "pvz";  pdata->hdata[5] = star.pvz;
 }
