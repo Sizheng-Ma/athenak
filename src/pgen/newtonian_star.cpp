@@ -272,6 +272,14 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     u0(m,IM1,k,j,i)=rho*vx; u0(m,IM2,k,j,i)=rho*vy; u0(m,IM3,k,j,i)=rho*vz;
     u0(m,IEN,k,j,i)=prs/(Gamma-1.0) + 0.5*rho*(vx*vx+vy*vy+vz*vz);
   });
+
+  // Release device arrays before Kokkos::finalize() so global destructor is safe
+  Kokkos::push_finalize_hook([]() {
+    star.d_phi    = DvceArray1D<Real>();
+    star.d_r_le   = DvceArray1D<Real>();
+    star.d_rho_le = DvceArray1D<Real>();
+    star.d_prs_le = DvceArray1D<Real>();
+  });
 }
 
 // ---------------------------------------------------------------------------
